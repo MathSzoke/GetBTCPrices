@@ -102,5 +102,5 @@ if __name__ == "__main__":
     monitor_thread = threading.Thread(target=monitor_btc_price, daemon=True)
     monitor_thread.start()
 
-    # Iniciar servidor Flask
-    app.run(port=2041)
+    port = int(os.environ.get('PORT', 2041))  # Pega a porta do Render ou usa 2041 como padrão
+    app.run(host='0.0.0.0', port=port)
