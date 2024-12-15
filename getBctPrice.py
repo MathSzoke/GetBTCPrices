@@ -14,93 +14,112 @@ account_sid = os.getenv('TWILIO_ACCOUNT_SID')
 auth_token = os.getenv('TWILIO_AUTH_TOKEN')
 twilio_client = Client(account_sid, auth_token)
 
-# Variável para armazenar as metas dos usuários (dicionário: número -> lista de valores)
-user_targets = {}
+# Variáveis para armazenar metas e estados do usuário
+user_targets = {}  # Metas de preço (dicionário: número -> lista de valores)
+user_state = {}    # Estado da conversa (dicionário: número -> estado)
 
-
-# Função para obter a taxa de câmbio USD para BRL
-def get_usd_to_brl_rate():
+# Função para obter a taxa de câmbio USD para outra moeda
+def get_exchange_rate(target_currency):
     url = "https://api.exchangerate-api.com/v4/latest/USD"
     response = requests.get(url)
     data = response.json()
-    return data['rates']['BRL']
-
+    rates = data.get("rates", {})
+    return rates.get(target_currency.upper(), None)
 
 # Função para obter o preço do Bitcoin em USD
 def get_btc_price():
     url = "https://api.binance.com/api/v3/ticker/price"
     params = {'symbol': 'BTCUSDT'}
-    response = requests.get(url, params=params)
+    response = requests.get(url)
     data = response.json()
-    return float(data['price'])
-
+    if 'price' in data:
+        return float(data['price'])
+    else:
+        return None
 
 # Função para formatar valores com separadores de milhares
-def format_currency(value):
-    return f"R${value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-# Função de monitoramento em background
-def monitor_btc_price():
-    while True:
-        # Obter preço atual
-        usd_to_brl_rate = get_usd_to_brl_rate()
-        btc_price_usd = get_btc_price()
-        btc_price_brl = btc_price_usd * usd_to_brl_rate
-
-        print(f"Preço atual do Bitcoin: {format_currency(btc_price_brl)}")
-
-        # Verificar todos os valores configurados pelos usuários
-        for user_number, targets in list(user_targets.items()):
-            for target_price in targets:
-                if btc_price_brl >= target_price:
-                    # Enviar mensagem
-                    twilio_client.messages.create(
-                        from_='whatsapp:+14155238886',
-                        body=f"🚨 O Bitcoin atingiu o valor desejado de {format_currency(target_price)}! Preço atual: {format_currency(btc_price_brl)}",
-                        to=user_number
-                    )
-                    # Remover o valor atingido da lista
-                    user_targets[user_number].remove(target_price)
-
-            # Remover o usuário caso não haja mais metas
-            if not user_targets[user_number]:
-                del user_targets[user_number]
-
-        sleep(30)  # Verifica a cada 30 segundos
-
+def format_currency(value, currency_symbol):
+    return f"{currency_symbol}{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # Endpoint do webhook para receber mensagens do WhatsApp
 @app.route("/whatsapp", methods=['POST'])
 def whatsapp():
-    incoming_msg = request.values.get('Body', '').strip()
+    incoming_msg = request.values.get('Body', '').strip().lower()
     from_number = request.values.get('From', '').strip()
 
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Processar mensagem do usuário
-    match = re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2})', incoming_msg)
-    if match:
-        price_str = match.group(1).replace('.', '').replace(',', '.')
-        target_price = float(price_str)
+    # Verificar o estado da conversa do usuário
+    if from_number in user_state:
+        state = user_state[from_number]
 
-        # Adicionar o valor ao dicionário de metas
+        # Estado: usuário escolheu "Outro" e precisa informar a moeda
+        if state == "custom_currency":
+            currency = incoming_msg.upper()
+            exchange_rate = get_exchange_rate(currency)
+            if exchange_rate:
+                btc_price_usd = get_btc_price()
+                btc_price = btc_price_usd * exchange_rate
+                msg.body(f"💰 O preço atual do Bitcoin em {currency} é {format_currency(btc_price, '')}.")
+            else:
+                msg.body(f"❌ Moeda '{currency}' não encontrada. Verifique o código e tente novamente.")
+
+            del user_state[from_number]
+            return str(resp)
+
+        # Estado: usuário escolheu uma opção numérica
+        elif state == "choose_currency":
+            match incoming_msg:
+                case "1":
+                    currency = "BRL"
+                    symbol = "R$"
+                case "2":
+                    currency = "USD"
+                    symbol = "$"
+                case "3":
+                    currency = "CAD"
+                    symbol = "C$"
+                case "4":
+                    msg.body("E qual moeda você deseja? Por favor, digite a abreviação da moeda, por exemplo: 'CAD'.")
+                    user_state[from_number] = "custom_currency"
+                    return str(resp)
+                case _:
+                    msg.body("❌ Opção inválida! Digite um número entre 1 e 4.")
+                    return str(resp)
+
+            # Obter valor do Bitcoin na moeda escolhida
+            exchange_rate = get_exchange_rate(currency)
+            btc_price_usd = get_btc_price()
+
+            if exchange_rate and btc_price_usd:
+                btc_price = btc_price_usd * exchange_rate
+                msg.body(f"💰 O preço atual do Bitcoin em {currency} é {format_currency(btc_price, symbol)}.")
+            else:
+                msg.body("❌ Não foi possível obter o preço do Bitcoin no momento. Tente novamente mais tarde.")
+
+            del user_state[from_number]
+            return str(resp)
+
+    # Comandos principais
+    if "informe o valor do bitcoin" in incoming_msg:
+        user_state[from_number] = "choose_currency"
+        msg.body("Qual moeda você deseja ver o valor do Bitcoin?\n1 - Reais\n2 - USD\n3 - CAD\n4 - Outro (informar)")
+
+    elif re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2})', incoming_msg):
+        price_str = re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2})', incoming_msg).group(1)
+        target_price = float(price_str.replace('.', '').replace(',', '.'))
         if from_number not in user_targets:
             user_targets[from_number] = []
         user_targets[from_number].append(target_price)
+        msg.body(f"👍 Você será notificado quando o Bitcoin atingir {format_currency(target_price, 'R$')}.")
 
-        msg.body(f"👍 Você será notificado quando o Bitcoin atingir {format_currency(target_price)}.")
     else:
-        msg.body("❌ Formato inválido! Envie: 'Notificar quando o valor do Bitcoin atingir R$600.000,00'.")
+        msg.body("❌ Comando não reconhecido. Tente:\n- 'Informe o valor do Bitcoin'\n- 'Notificar quando o valor do Bitcoin atingir R$600.000,00'")
 
     return str(resp)
 
 
 if __name__ == "__main__":
-    # Iniciar monitoramento em background
-    monitor_thread = threading.Thread(target=monitor_btc_price, daemon=True)
-    monitor_thread.start()
-
-    port = int(os.environ.get('PORT', 2041))  # Pega a porta do Render ou usa 2041 como padrão
+    port = int(os.environ.get('PORT', 2041))
     app.run(host='0.0.0.0', port=port)
