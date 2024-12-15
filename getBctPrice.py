@@ -79,7 +79,7 @@ def whatsapp():
                     symbol = "$"
                 case "3":
                     currency = "CAD"
-                    symbol = "C$"
+                    symbol = "CA$"
                 case "4":
                     msg.body("E qual moeda você deseja? Por favor, digite a abreviação da moeda, por exemplo: 'CAD'.")
                     user_state[from_number] = "custom_currency"
