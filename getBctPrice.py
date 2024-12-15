@@ -2,8 +2,10 @@ import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
-import re
+import threading
+import time
 import os
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -12,9 +14,10 @@ account_sid = os.getenv('TWILIO_ACCOUNT_SID')
 auth_token = os.getenv('TWILIO_AUTH_TOKEN')
 twilio_client = Client(account_sid, auth_token)
 
-# Variáveis para armazenar metas e estados do usuário
-user_targets = {}  # Metas de preço (dicionário: número -> lista de valores)
-user_state = {}    # Estado da conversa (dicionário: número -> estado)
+# Variáveis globais
+btc_prices = []  # Armazena os preços do Bitcoin para tendência de mercado
+daily_summary = {}  # Armazena os dados de resumo diário
+subscribed_users = set()  # Armazena os números dos usuários que recebem o resumo diário
 
 
 # Função para obter o preço do Bitcoin em USD
@@ -24,7 +27,6 @@ def get_btc_price():
         params = {'symbol': 'BTCUSDT'}
         response = requests.get(url)
         data = response.json()
-
         if response.status_code == 200 and 'price' in data:
             return float(data['price'])
         else:
@@ -35,34 +37,73 @@ def get_btc_price():
         return None
 
 
-# Função para obter a taxa de câmbio USD -> Outra moeda
-def get_exchange_rate(target_currency):
-    try:
-        url = "https://api.exchangerate-api.com/v4/latest/USD"
-        response = requests.get(url)
-        data = response.json()
-
-        if response.status_code == 200 and "rates" in data:
-            rates = data["rates"]
-            if target_currency.upper() in rates:
-                return rates[target_currency.upper()]
-            else:
-                print(f"Erro: Moeda {target_currency} não encontrada. Resposta: {data}")
-                return None
-        else:
-            print(f"Erro: ExchangeRate API retornou {data}")
-            return None
-    except Exception as e:
-        print(f"Erro ao obter a taxa de câmbio: {e}")
-        return None
+# Função para calcular a média móvel simples
+def calculate_simple_moving_average(prices):
+    return sum(prices) / len(prices) if prices else 0
 
 
-# Função para formatar valores monetários
-def format_currency(value, currency_symbol):
-    return f"{currency_symbol}{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+# Função para atualizar o resumo diário
+def update_daily_summary():
+    while True:
+        price = get_btc_price()
+        if price:
+            if "max" not in daily_summary or price > daily_summary["max"]:
+                daily_summary["max"] = price
+            if "min" not in daily_summary or price < daily_summary["min"]:
+                daily_summary["min"] = price
+            daily_summary["current"] = price
+
+            # Atualizar histórico de preços
+            btc_prices.append(price)
+            if len(btc_prices) > 10:  # Mantém apenas os últimos 10 preços
+                btc_prices.pop(0)
+        time.sleep(60)  # Atualiza a cada minuto
 
 
-# Endpoint do webhook para receber mensagens do WhatsApp
+# Função para formatar o resumo diário
+def get_daily_summary():
+    if not daily_summary:
+        return "❌ Resumo diário ainda não disponível. Tente novamente mais tarde."
+    max_price = daily_summary.get("max", 0)
+    min_price = daily_summary.get("min", 0)
+    current_price = daily_summary.get("current", 0)
+    variation = ((current_price - min_price) / min_price) * 100 if min_price else 0
+
+    return (
+        "🔔 Resumo Diário do Bitcoin:\n\n"
+        f"💰 Preço atual: ${current_price:,.2f}\n"
+        f"📈 Máximo: ${max_price:,.2f}\n"
+        f"📉 Mínimo: ${min_price:,.2f}\n"
+        f"📊 Variação: {variation:.2f}%"
+    )
+
+
+# Função para enviar mensagem no WhatsApp
+def send_whatsapp_message(to, body):
+    twilio_client.messages.create(
+        from_="whatsapp:+14155238886",
+        body=body,
+        to=to
+    )
+
+
+# Função para agendar envio automático do resumo diário
+def schedule_daily_summary():
+    while True:
+        now = datetime.now()
+        next_midnight = datetime.combine(now + timedelta(days=1), datetime.min.time())
+        seconds_until_midnight = (next_midnight - now).total_seconds()
+        print(f"🕛 Aguardando {seconds_until_midnight:.0f} segundos até o envio do resumo diário...")
+        time.sleep(seconds_until_midnight)
+
+        # Enviar resumo diário para todos os usuários inscritos
+        summary = get_daily_summary()
+        for user in subscribed_users:
+            send_whatsapp_message(user, summary)
+        print("✅ Resumo diário enviado!")
+
+
+# Endpoint principal do WhatsApp
 @app.route("/whatsapp", methods=['POST'])
 def whatsapp():
     incoming_msg = request.values.get('Body', '').strip().lower()
@@ -71,79 +112,44 @@ def whatsapp():
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Verificar o estado da conversa
-    if from_number in user_state:
-        state = user_state[from_number]
+    # Comando: Resumo diário
+    if "resumo diário" in incoming_msg:
+        summary = get_daily_summary()
+        msg.body(summary)
 
-        # Estado: O usuário informou "Outro" e precisa enviar uma moeda
-        if state == "custom_currency":
-            currency = incoming_msg.upper()
-            exchange_rate = get_exchange_rate(currency)
-            btc_price_usd = get_btc_price()
-
-            if exchange_rate is None:
-                msg.body(f"❌ Não foi possível encontrar a taxa de câmbio para '{currency}'.")
-            elif btc_price_usd is None:
-                msg.body("❌ Não foi possível obter o preço do Bitcoin no momento.")
+    # Comando: Tendência de mercado
+    elif "tendência do mercado" in incoming_msg:
+        if len(btc_prices) < 2:
+            msg.body("❌ Não há dados suficientes para determinar a tendência do mercado.")
+        else:
+            current_price = btc_prices[-1]
+            moving_average = calculate_simple_moving_average(btc_prices)
+            if current_price > moving_average:
+                msg.body(f"📈 Tendência de alta! Preço atual: ${current_price:,.2f}, acima da média de ${moving_average:,.2f}.")
             else:
-                btc_price = btc_price_usd * exchange_rate
-                msg.body(f"💰 O preço atual do Bitcoin em {currency} é {format_currency(btc_price, '')}.")
-            del user_state[from_number]
-            return str(resp)
+                msg.body(f"📉 Tendência de baixa! Preço atual: ${current_price:,.2f}, abaixo da média de ${moving_average:,.2f}.")
 
-        # Estado: O usuário escolheu uma moeda da lista
-        elif state == "choose_currency":
-            match incoming_msg:
-                case "1":
-                    currency, symbol = "BRL", "R$"
-                case "2":
-                    currency, symbol = "USD", "$"
-                case "3":
-                    currency, symbol = "CAD", "C$"
-                case "4":
-                    msg.body("E qual moeda você deseja? Digite a abreviação da moeda, como 'EUR'.")
-                    user_state[from_number] = "custom_currency"
-                    return str(resp)
-                case _:
-                    msg.body("❌ Opção inválida! Digite um número entre 1 e 4.")
-                    return str(resp)
+    # Comando: Inscrever no resumo diário
+    elif "inscrever resumo" in incoming_msg:
+        subscribed_users.add(from_number)
+        msg.body("✅ Você foi inscrito no resumo diário do Bitcoin! Aguarde o envio automático toda meia-noite.")
 
-            # Buscar o preço do Bitcoin e taxa de câmbio
-            exchange_rate = get_exchange_rate(currency)
-            btc_price_usd = get_btc_price()
-
-            if exchange_rate is None:
-                msg.body("❌ Não foi possível obter a taxa de câmbio no momento.")
-            elif btc_price_usd is None:
-                msg.body("❌ Não foi possível obter o preço do Bitcoin no momento.")
-            else:
-                btc_price = btc_price_usd * exchange_rate
-                msg.body(f"💰 O preço atual do Bitcoin em {currency} é {format_currency(btc_price, symbol)}.")
-            del user_state[from_number]
-            return str(resp)
-
-    # Comando principal: Solicitar o valor do Bitcoin
-    if "informe o valor do bitcoin" in incoming_msg:
-        user_state[from_number] = "choose_currency"
-        msg.body("Qual moeda você deseja ver o valor do Bitcoin?\n1 - Reais\n2 - USD\n3 - CAD\n4 - Outro (informar)")
-
-    # Definir alertas de preço
-    elif re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2})', incoming_msg):
-        price_str = re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2})', incoming_msg).group(1)
-        target_price = float(price_str.replace('.', '').replace(',', '.'))
-        if from_number not in user_targets:
-            user_targets[from_number] = []
-        user_targets[from_number].append(target_price)
-        msg.body(f"👍 Você será notificado quando o Bitcoin atingir {format_currency(target_price, 'R$')}.")
-
-    # Mensagem padrão
+    # Comando padrão
     else:
         msg.body("❌ Comando não reconhecido. Tente:\n"
-                 "- 'Informe o valor do Bitcoin'\n"
-                 "- 'Notificar quando o valor do Bitcoin atingir R$600.000,00'")
+                 "- 'Resumo diário'\n"
+                 "- 'Tendência do mercado'\n"
+                 "- 'Inscrever resumo' (para receber o resumo diário automaticamente)")
+
     return str(resp)
 
 
+# Iniciar monitoramento e agendamento em threads separadas
 if __name__ == "__main__":
+    summary_thread = threading.Thread(target=update_daily_summary, daemon=True)
+    schedule_thread = threading.Thread(target=schedule_daily_summary, daemon=True)
+    summary_thread.start()
+    schedule_thread.start()
+
     port = int(os.environ.get('PORT', 2041))
     app.run(host='0.0.0.0', port=port)
