@@ -20,24 +20,6 @@ user_state = {}    # Estado da conversa (dicionário: número -> estado)
 
 
 # Função para obter a taxa de câmbio USD para outra moeda
-def get_exchange_rate(target_currency):
-    try:
-        url = "https://api.exchangerate-api.com/v4/latest/USD"
-        response = requests.get(url)
-        data = response.json()
-
-        rates = data.get("rates", {})
-        if target_currency.upper() in rates:
-            return rates[target_currency.upper()]
-        else:
-            print(f"Erro: Taxa de câmbio para {target_currency} não encontrada. Resposta: {data}")
-            return None
-    except Exception as e:
-        print(f"Erro ao obter a taxa de câmbio: {e}")
-        return None
-
-
-# Função para obter o preço do Bitcoin em USD
 def get_btc_price():
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
@@ -52,6 +34,23 @@ def get_btc_price():
             return None
     except Exception as e:
         print(f"Erro ao obter o preço do Bitcoin: {e}")
+        return None
+
+
+def get_exchange_rate(target_currency):
+    try:
+        url = "https://api.exchangerate-api.com/v4/latest/USD"
+        response = requests.get(url)
+        data = response.json()
+
+        rates = data.get("rates", {})
+        if target_currency.upper() in rates:
+            return rates[target_currency.upper()]
+        else:
+            print(f"Erro: Taxa de câmbio para {target_currency} não encontrada. Resposta: {data}")
+            return None
+    except Exception as e:
+        print(f"Erro ao obter a taxa de câmbio: {e}")
         return None
 
 
