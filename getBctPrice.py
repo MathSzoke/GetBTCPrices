@@ -18,24 +18,42 @@ twilio_client = Client(account_sid, auth_token)
 user_targets = {}  # Metas de preço (dicionário: número -> lista de valores)
 user_state = {}    # Estado da conversa (dicionário: número -> estado)
 
+
 # Função para obter a taxa de câmbio USD para outra moeda
 def get_exchange_rate(target_currency):
-    url = "https://api.exchangerate-api.com/v4/latest/USD"
-    response = requests.get(url)
-    data = response.json()
-    rates = data.get("rates", {})
-    return rates.get(target_currency.upper(), None)
+    try:
+        url = "https://api.exchangerate-api.com/v4/latest/USD"
+        response = requests.get(url)
+        data = response.json()
+
+        rates = data.get("rates", {})
+        if target_currency.upper() in rates:
+            return rates[target_currency.upper()]
+        else:
+            print(f"Erro: Taxa de câmbio para {target_currency} não encontrada. Resposta: {data}")
+            return None
+    except Exception as e:
+        print(f"Erro ao obter a taxa de câmbio: {e}")
+        return None
+
 
 # Função para obter o preço do Bitcoin em USD
 def get_btc_price():
-    url = "https://api.binance.com/api/v3/ticker/price"
-    params = {'symbol': 'BTCUSDT'}
-    response = requests.get(url)
-    data = response.json()
-    if 'price' in data:
-        return float(data['price'])
-    else:
+    try:
+        url = "https://api.binance.com/api/v3/ticker/price"
+        params = {'symbol': 'BTCUSDT'}
+        response = requests.get(url)
+        data = response.json()
+
+        if 'price' in data:
+            return float(data['price'])
+        else:
+            print(f"Erro: Chave 'price' não encontrada na resposta da API Binance: {data}")
+            return None
+    except Exception as e:
+        print(f"Erro ao obter o preço do Bitcoin: {e}")
         return None
+
 
 # Função para formatar valores com separadores de milhares
 def format_currency(value, currency_symbol):
@@ -79,7 +97,7 @@ def whatsapp():
                     symbol = "$"
                 case "3":
                     currency = "CAD"
-                    symbol = "CA$"
+                    symbol = "C$"
                 case "4":
                     msg.body("E qual moeda você deseja? Por favor, digite a abreviação da moeda, por exemplo: 'CAD'.")
                     user_state[from_number] = "custom_currency"
@@ -96,7 +114,7 @@ def whatsapp():
                 btc_price = btc_price_usd * exchange_rate
                 msg.body(f"💰 O preço atual do Bitcoin em {currency} é {format_currency(btc_price, symbol)}.")
             else:
-                msg.body("❌ Não foi possível obter o preço do Bitcoin no momento. Tente novamente mais tarde.")
+                msg.body("❌ Não foi possível obter o preço do Bitcoin ou a taxa de câmbio no momento.")
 
             del user_state[from_number]
             return str(resp)
@@ -115,7 +133,9 @@ def whatsapp():
         msg.body(f"👍 Você será notificado quando o Bitcoin atingir {format_currency(target_price, 'R$')}.")
 
     else:
-        msg.body("❌ Comando não reconhecido. Tente:\n- 'Informe o valor do Bitcoin'\n- 'Notificar quando o valor do Bitcoin atingir R$600.000,00'")
+        msg.body("❌ Comando não reconhecido. Tente:\n"
+                 "- 'Informe o valor do Bitcoin'\n"
+                 "- 'Notificar quando o valor do Bitcoin atingir R$600.000,00'")
 
     return str(resp)
 
