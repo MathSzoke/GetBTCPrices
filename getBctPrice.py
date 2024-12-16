@@ -77,22 +77,31 @@ def get_exchange_rates():
 
 # Função para obter o preço do Bitcoin em diversas moedas
 def get_btc_prices_in_currencies():
-    btc_usd = get_btc_price()
-    exchange_rates = get_exchange_rates()
+    print("[DEBUG] Iniciando get_btc_prices_in_currencies...")  # Verifica se a função é chamada
 
-    if not btc_usd:
+    btc_usd = get_btc_price()
+    print(f"[DEBUG] Retorno de get_btc_price: {btc_usd}")  # Log do retorno da função get_btc_price
+
+    exchange_rates = get_exchange_rates()
+    print(f"[DEBUG] Retorno de get_exchange_rates: {exchange_rates}")  # Log do retorno de taxas de câmbio
+
+    if btc_usd is None:  # Teste explícito para None
+        print("[ERRO] btc_usd é None. Problema na API da Binance ou na função get_btc_price.")
         return "❌ Erro ao obter o preço do Bitcoin em USD. Tente novamente mais tarde."
 
-    if not exchange_rates:
+    if exchange_rates is None:  # Teste explícito para dicionário vazio
+        print("[ERRO] exchange_rates está vazio. Problema na API de taxas de câmbio.")
         return "❌ Erro ao obter as taxas de câmbio. Tente novamente mais tarde."
 
     try:
         btc_prices = {
             "USD": btc_usd,
-            "BRL": btc_usd * exchange_rates["BRL"],
-            "EUR": btc_usd * exchange_rates["EUR"],
-            "CAD": btc_usd * exchange_rates["CAD"]
+            "BRL": btc_usd * exchange_rates.get("BRL", 0),
+            "EUR": btc_usd * exchange_rates.get("EUR", 0),
+            "CAD": btc_usd * exchange_rates.get("CAD", 0)
         }
+
+        print(f"[INFO] Preços calculados: {btc_prices}")  # Log dos preços calculados
 
         return (
             "💰 Valor atual do Bitcoin:\n\n"
@@ -104,6 +113,7 @@ def get_btc_prices_in_currencies():
     except Exception as e:
         print(f"[ERRO] Falha ao calcular os preços em outras moedas: {e}")
         return "❌ Erro ao calcular os preços do Bitcoin. Tente novamente mais tarde."
+
 
 
 # Função para formatar valores como moeda
