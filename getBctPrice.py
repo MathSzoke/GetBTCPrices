@@ -5,6 +5,7 @@ from twilio.rest import Client
 import threading
 import time
 import os
+import re
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
@@ -15,141 +16,136 @@ auth_token = os.getenv('TWILIO_AUTH_TOKEN')
 twilio_client = Client(account_sid, auth_token)
 
 # Variáveis globais
-btc_prices = []  # Armazena os preços do Bitcoin para tendência de mercado
-daily_summary = {}  # Armazena os dados de resumo diário
-subscribed_users = set()  # Armazena os números dos usuários que recebem o resumo diário
+btc_prices = []  # Preços do Bitcoin para média móvel
+daily_summary = {}  # Dados do resumo diário
+user_above_targets = {}  # Notificações de alta
+user_below_targets = {}  # Notificações de baixa
+subscribed_users = set()  # Usuários inscritos no resumo diário
 
+
+# ========================= FUNÇÕES AUXILIARES ==========================
 
 # Função para obter o preço do Bitcoin em USD
 def get_btc_price():
-    try:
-        url = "https://api.binance.com/api/v3/ticker/price"
-        params = {'symbol': 'BTCUSDT'}
-        response = requests.get(url)
-        data = response.json()
-        if response.status_code == 200 and 'price' in data:
-            return float(data['price'])
-        else:
-            print(f"Erro: Binance API retornou {data}")
-            return None
-    except Exception as e:
-        print(f"Erro ao obter o preço do Bitcoin: {e}")
-        return None
+    url = "https://api.binance.com/api/v3/ticker/price"
+    response = requests.get(url, params={"symbol": "BTCUSDT"})
+    data = response.json()
+    return float(data["price"]) if "price" in data else None
 
+# Função para processar valores simplificados (650mil, 650k)
+def parse_price(value):
+    match = re.match(r"(\d+)\s*(mil|k)?", value, re.IGNORECASE)
+    if match:
+        base_value = int(match.group(1))
+        if match.group(2):  # 'mil' ou 'k' presente
+            base_value *= 1000
+        return base_value
+    return None
 
-# Função para calcular a média móvel simples
-def calculate_simple_moving_average(prices):
-    return sum(prices) / len(prices) if prices else 0
+# Função para formatar valores como moeda
+def format_currency(value):
+    return f"R${value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-
-# Função para atualizar o resumo diário
-def update_daily_summary():
-    while True:
-        price = get_btc_price()
-        if price:
-            if "max" not in daily_summary or price > daily_summary["max"]:
-                daily_summary["max"] = price
-            if "min" not in daily_summary or price < daily_summary["min"]:
-                daily_summary["min"] = price
-            daily_summary["current"] = price
-
-            # Atualizar histórico de preços
-            btc_prices.append(price)
-            if len(btc_prices) > 10:  # Mantém apenas os últimos 10 preços
-                btc_prices.pop(0)
-        time.sleep(60)  # Atualiza a cada minuto
-
-
-# Função para formatar o resumo diário
+# Resumo diário
 def get_daily_summary():
     if not daily_summary:
-        return "❌ Resumo diário ainda não disponível. Tente novamente mais tarde."
+        return "❌ Resumo diário ainda não disponível."
     max_price = daily_summary.get("max", 0)
     min_price = daily_summary.get("min", 0)
     current_price = daily_summary.get("current", 0)
     variation = ((current_price - min_price) / min_price) * 100 if min_price else 0
-
     return (
         "🔔 Resumo Diário do Bitcoin:\n\n"
-        f"💰 Preço atual: ${current_price:,.2f}\n"
-        f"📈 Máximo: ${max_price:,.2f}\n"
-        f"📉 Mínimo: ${min_price:,.2f}\n"
+        f"💰 Preço atual: {format_currency(current_price)}\n"
+        f"📈 Máximo: {format_currency(max_price)}\n"
+        f"📉 Mínimo: {format_currency(min_price)}\n"
         f"📊 Variação: {variation:.2f}%"
     )
 
+# Tendência do mercado
+def get_market_trend():
+    if len(btc_prices) < 2:
+        return "❌ Não há dados suficientes para tendência do mercado."
+    moving_avg = sum(btc_prices) / len(btc_prices)
+    current_price = btc_prices[-1]
+    trend = "📈 Alta" if current_price > moving_avg else "📉 Baixa"
+    return f"{trend}! Preço atual: {format_currency(current_price)} | Média: {format_currency(moving_avg)}"
 
-# Função para enviar mensagem no WhatsApp
-def send_whatsapp_message(to, body):
-    twilio_client.messages.create(
-        from_="whatsapp:+14155238886",
-        body=body,
-        to=to
-    )
+# Notificar metas de preço
+def configure_notification(command, user_number):
+    above_match = re.search(r"atingir\s+(\S+)", command)
+    below_match = re.search(r"abaixar\s+para\s+(\S+)", command)
 
+    if above_match:
+        price = parse_price(above_match.group(1))
+        if price:
+            user_above_targets.setdefault(user_number, []).append(price)
+            return f"👍 Notificação configurada! Avisa quando o Bitcoin atingir {format_currency(price)}."
+    elif below_match:
+        price = parse_price(below_match.group(1))
+        if price:
+            user_below_targets.setdefault(user_number, []).append(price)
+            return f"👍 Notificação configurada! Avisa quando o Bitcoin abaixar para {format_currency(price)}."
+    return "❌ Valor inválido. Use: '650mil' ou '650k'."
 
-# Função para agendar envio automático do resumo diário
-def schedule_daily_summary():
+# Inscrever resumo diário
+def subscribe_summary(user_number):
+    subscribed_users.add(user_number)
+    return "✅ Você foi inscrito no resumo diário do Bitcoin!"
+
+# ====================== DICIONÁRIO DE COMANDOS =========================
+
+COMMANDS = {
+    "resumo diário": get_daily_summary,
+    "tendência do mercado": get_market_trend,
+    "inscrever resumo": subscribe_summary,
+    "notificar": configure_notification
+}
+
+# ========================= SISTEMA DE MONITORAMENTO ====================
+
+# Monitorar preço do Bitcoin
+def monitor_btc():
     while True:
-        now = datetime.now()
-        next_midnight = datetime.combine(now + timedelta(days=1), datetime.min.time())
-        seconds_until_midnight = (next_midnight - now).total_seconds()
-        print(f"🕛 Aguardando {seconds_until_midnight:.0f} segundos até o envio do resumo diário...")
-        time.sleep(seconds_until_midnight)
+        price = get_btc_price()
+        if price:
+            daily_summary.setdefault("max", price)
+            daily_summary.setdefault("min", price)
+            daily_summary["current"] = price
+            daily_summary["max"] = max(daily_summary["max"], price)
+            daily_summary["min"] = min(daily_summary["min"], price)
+            btc_prices.append(price)
+            if len(btc_prices) > 10:
+                btc_prices.pop(0)
+        time.sleep(60)
 
-        # Enviar resumo diário para todos os usuários inscritos
-        summary = get_daily_summary()
-        for user in subscribed_users:
-            send_whatsapp_message(user, summary)
-        print("✅ Resumo diário enviado!")
+# ========================= ENDPOINT DO WHATSAPP =======================
 
-
-# Endpoint principal do WhatsApp
-@app.route("/whatsapp", methods=['POST'])
+@app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    incoming_msg = request.values.get('Body', '').strip().lower()
-    from_number = request.values.get('From', '').strip()
+    incoming_msg = request.values.get("Body", "").strip().lower()
+    from_number = request.values.get("From", "").strip()
 
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Comando: Resumo diário
-    if "resumo diário" in incoming_msg:
-        summary = get_daily_summary()
-        msg.body(summary)
-
-    # Comando: Tendência de mercado
-    elif "tendência do mercado" in incoming_msg:
-        if len(btc_prices) < 2:
-            msg.body("❌ Não há dados suficientes para determinar a tendência do mercado.")
-        else:
-            current_price = btc_prices[-1]
-            moving_average = calculate_simple_moving_average(btc_prices)
-            if current_price > moving_average:
-                msg.body(f"📈 Tendência de alta! Preço atual: ${current_price:,.2f}, acima da média de ${moving_average:,.2f}.")
+    # Iterar pelos comandos no dicionário
+    for cmd, func in COMMANDS.items():
+        if cmd in incoming_msg:
+            if cmd == "notificar":
+                response_text = func(incoming_msg, from_number)
             else:
-                msg.body(f"📉 Tendência de baixa! Preço atual: ${current_price:,.2f}, abaixo da média de ${moving_average:,.2f}.")
+                response_text = func(from_number)
+            msg.body(response_text)
+            return str(resp)
 
-    # Comando: Inscrever no resumo diário
-    elif "inscrever resumo" in incoming_msg:
-        subscribed_users.add(from_number)
-        msg.body("✅ Você foi inscrito no resumo diário do Bitcoin! Aguarde o envio automático toda meia-noite.")
-
-    # Comando padrão
-    else:
-        msg.body("❌ Comando não reconhecido. Tente:\n"
-                 "- 'Resumo diário'\n"
-                 "- 'Tendência do mercado'\n"
-                 "- 'Inscrever resumo' (para receber o resumo diário automaticamente)")
-
+    # Comando desconhecido
+    msg.body("❌ Comando não reconhecido. Tente:\n- 'Resumo diário'\n- 'Tendência do mercado'\n- 'Inscrever resumo'")
     return str(resp)
 
+# ========================= INICIALIZAÇÃO ==============================
 
-# Iniciar monitoramento e agendamento em threads separadas
 if __name__ == "__main__":
-    summary_thread = threading.Thread(target=update_daily_summary, daemon=True)
-    schedule_thread = threading.Thread(target=schedule_daily_summary, daemon=True)
-    summary_thread.start()
-    schedule_thread.start()
-
-    port = int(os.environ.get('PORT', 2041))
-    app.run(host='0.0.0.0', port=port)
+    threading.Thread(target=monitor_btc, daemon=True).start()
+    port = int(os.environ.get("PORT", 2041))
+    app.run(host="0.0.0.0", port=port)
