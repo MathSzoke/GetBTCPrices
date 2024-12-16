@@ -30,9 +30,7 @@ def get_btc_price():
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
         response = requests.get(url, params={"symbol": "BTCUSDT"}, timeout=5)
-        response.raise_for_status()  # Lança um erro se o status HTTP não for 200
 
-        # Verificando o conteúdo da resposta
         data = response.json()
         return float(data["price"])
     except requests.exceptions.RequestException as e:
