@@ -25,20 +25,45 @@ subscribed_users = set()  # Usuários inscritos no resumo diário
 
 # ========================= FUNÇÕES AUXILIARES ==========================
 
-# Função para obter o preço do Bitcoin em USD
+# Função para obter o preço do Bitcoin em USD com tratamento de erro
 def get_btc_price():
-    url = "https://api.binance.com/api/v3/ticker/price"
-    response = requests.get(url, params={"symbol": "BTCUSDT"})
-    data = response.json()
-    return float(data["price"]) if "price" in data else None
+    try:
+        url = "https://api.binance.com/api/v3/ticker/price"
+        response = requests.get(url, params={"symbol": "BTCUSDT"}, timeout=5)
+        response.raise_for_status()  # Lança um erro se o status não for 200
+        data = response.json()
+        if "price" in data:
+            print(f"[INFO] Preço do BTC em USD: {data['price']}")  # Log para depuração
+            return float(data["price"])
+        else:
+            print("[ERRO] Chave 'price' não encontrada na resposta da Binance.")
+            return None
+    except Exception as e:
+        print(f"[ERRO] Falha ao buscar preço do BTC da Binance: {e}")
+        return None
 
 
-# Função para obter taxas de câmbio USD -> outras moedas
+# Função para obter taxas de câmbio USD -> outras moedas com tratamento de erro
 def get_exchange_rates():
-    url = "https://api.exchangerate-api.com/v4/latest/USD"
-    response = requests.get(url).json()
-    rates = response.get("rates", {})
-    return {"BRL": rates.get("BRL"), "EUR": rates.get("EUR"), "CAD": rates.get("CAD")}
+    try:
+        url = "https://api.exchangerate-api.com/v4/latest/USD"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        rates = data.get("rates", {})
+        if rates:
+            print(f"[INFO] Taxas de câmbio obtidas: {rates}")  # Log para depuração
+            return {
+                "BRL": rates.get("BRL"),
+                "EUR": rates.get("EUR"),
+                "CAD": rates.get("CAD")
+            }
+        else:
+            print("[ERRO] Nenhuma taxa de câmbio encontrada na resposta.")
+            return None
+    except Exception as e:
+        print(f"[ERRO] Falha ao buscar taxas de câmbio: {e}")
+        return None
 
 
 # Função para obter o preço do Bitcoin em diversas moedas
@@ -46,23 +71,30 @@ def get_btc_prices_in_currencies():
     btc_usd = get_btc_price()
     exchange_rates = get_exchange_rates()
 
-    if not btc_usd or not exchange_rates:
-        return "❌ Não foi possível obter os preços no momento."
+    if not btc_usd:
+        return "❌ Erro ao obter o preço do Bitcoin em USD. Tente novamente mais tarde."
 
-    btc_prices = {
-        "USD": btc_usd,
-        "BRL": btc_usd * exchange_rates["BRL"],
-        "EUR": btc_usd * exchange_rates["EUR"],
-        "CAD": btc_usd * exchange_rates["CAD"]
-    }
+    if not exchange_rates:
+        return "❌ Erro ao obter as taxas de câmbio. Tente novamente mais tarde."
 
-    return (
-        "💰 Valor atual do Bitcoin:\n\n"
-        f"🇺🇸 USD: ${btc_prices['USD']:,.2f}\n"
-        f"🇧🇷 BRL: R${btc_prices['BRL']:,.2f}\n"
-        f"🇪🇺 EUR: €{btc_prices['EUR']:,.2f}\n"
-        f"🇨🇦 CAD: C${btc_prices['CAD']:,.2f}"
-    ).replace(",", "X").replace(".", ",").replace("X", ".")
+    try:
+        btc_prices = {
+            "USD": btc_usd,
+            "BRL": btc_usd * exchange_rates["BRL"],
+            "EUR": btc_usd * exchange_rates["EUR"],
+            "CAD": btc_usd * exchange_rates["CAD"]
+        }
+
+        return (
+            "💰 Valor atual do Bitcoin:\n\n"
+            f"🇺🇸 USD: ${btc_prices['USD']:,.2f}\n"
+            f"🇧🇷 BRL: R${btc_prices['BRL']:,.2f}\n"
+            f"🇪🇺 EUR: €{btc_prices['EUR']:,.2f}\n"
+            f"🇨🇦 CAD: C${btc_prices['CAD']:,.2f}"
+        ).replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception as e:
+        print(f"[ERRO] Falha ao calcular os preços em outras moedas: {e}")
+        return "❌ Erro ao calcular os preços do Bitcoin. Tente novamente mais tarde."
 
 
 # Função para formatar valores como moeda
@@ -184,7 +216,11 @@ def whatsapp():
             return str(resp)
 
     # Comando desconhecido
-    msg.body("❌ Comando não reconhecido. Tente:\n- 'Informe o valor do Bitcoin'\n- 'Resumo diário'\n- 'Tendência do mercado'\n- 'Inscrever resumo'")
+    msg.body("❌ Comando não reconhecido. Tente:\n"
+             "- 'Informe o valor do Bitcoin'\n"
+             "- 'Resumo diário'\n"
+             "- 'Tendência do mercado'\n"
+             "- 'Inscrever resumo'")
     return str(resp)
 
 
