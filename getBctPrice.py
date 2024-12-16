@@ -30,16 +30,25 @@ def get_btc_price():
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
         response = requests.get(url, params={"symbol": "BTCUSDT"}, timeout=5)
-        response.raise_for_status()  # Lança um erro se o status não for 200
+        response.raise_for_status()  # Lança um erro se o status HTTP não for 200
+
+        # Verificando o conteúdo da resposta
         data = response.json()
+        print(f"[DEBUG] Resposta da API Binance: {data}")  # Log para depuração
+
+        # Validando se a chave 'price' existe
         if "price" in data:
-            print(f"[INFO] Preço do BTC em USD: {data['price']}")  # Log para depuração
-            return float(data["price"])
+            price = float(data["price"])
+            print(f"[INFO] Preço do BTC em USD: {price}")
+            return price
         else:
             print("[ERRO] Chave 'price' não encontrada na resposta da Binance.")
             return None
-    except Exception as e:
-        print(f"[ERRO] Falha ao buscar preço do BTC da Binance: {e}")
+    except requests.exceptions.RequestException as e:
+        print(f"[ERRO] Falha na requisição HTTP para Binance: {e}")
+        return None
+    except ValueError as ve:
+        print(f"[ERRO] Falha ao converter resposta da Binance: {ve}")
         return None
 
 
