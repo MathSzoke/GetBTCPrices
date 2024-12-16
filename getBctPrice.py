@@ -6,7 +6,6 @@ import threading
 import time
 import os
 import re
-from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -29,10 +28,15 @@ subscribed_users = set()  # Usuários inscritos no resumo diário
 def get_btc_price():
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
-        response = requests.get(url, params={"symbol": "BTCUSDT"}, timeout=5)
-
+        params = {'symbol': 'BTCUSDT'}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
         data = response.json()
-        return float(data["price"])
+
+        if "price" in data:
+            return float(data["price"])
+        else:
+            return None
     except requests.exceptions.RequestException as e:
         return None
     except ValueError as ve:
@@ -43,7 +47,7 @@ def get_btc_price():
 def get_exchange_rates():
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
-        response = requests.get(url, timeout=5)
+        response = requests.get(url)
         response.raise_for_status()
         data = response.json()
         rates = data.get("rates", {})
@@ -81,7 +85,7 @@ def get_btc_prices_in_currencies():
 
     try:
         # Calcular preços em diversas moedas
-        btc_prices = {
+        btc_prices_currencies = {
             "USD": btc_usd,
             "BRL": btc_usd * brl_rate,
             "EUR": btc_usd * eur_rate,
@@ -91,10 +95,10 @@ def get_btc_prices_in_currencies():
         # Formatar a mensagem de retorno
         return (
             "💰 Valor atual do Bitcoin:\n\n"
-            f"🇺🇸 USD: ${btc_prices['USD']:,.2f}\n"
-            f"🇧🇷 BRL: R${btc_prices['BRL']:,.2f}\n"
-            f"🇪🇺 EUR: €{btc_prices['EUR']:,.2f}\n"
-            f"🇨🇦 CAD: C${btc_prices['CAD']:,.2f}"
+            f"🇺🇸 USD: ${btc_prices_currencies['USD']:,.2f}\n"
+            f"🇧🇷 BRL: R${btc_prices_currencies['BRL']:,.2f}\n"
+            f"🇪🇺 EUR: €{btc_prices_currencies['EUR']:,.2f}\n"
+            f"🇨🇦 CAD: C${btc_prices_currencies['CAD']:,.2f}"
         ).replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception as e:
         return f"❌ Erro ao calcular os preços do Bitcoin: {e}"
