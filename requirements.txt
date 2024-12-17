@@ -1,4 +1,8 @@
 flask
-requests
 twilio
-openai
+requests
+transformers
+torch
+accelerate
+fastapi
+uvicorn
