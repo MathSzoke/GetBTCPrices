@@ -2,6 +2,7 @@ import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
+from openai import OpenAI
 import threading
 import time
 import os
@@ -9,225 +10,139 @@ import re
 
 app = Flask(__name__)
 
-# Configuração do Twilio
-account_sid = os.getenv('TWILIO_ACCOUNT_SID')
-auth_token = os.getenv('TWILIO_AUTH_TOKEN')
+# Configurações Twilio
+account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_client = Client(account_sid, auth_token)
 
+# Configuração OpenAI
+openai_api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_api_key)
+
 # Variáveis globais
-btc_prices = []  # Preços do Bitcoin para média móvel
-daily_summary = {}  # Dados do resumo diário
-user_above_targets = {}  # Notificações de alta
-user_below_targets = {}  # Notificações de baixa
-subscribed_users = set()  # Usuários inscritos no resumo diário
+btc_prices = []  # Histórico do preço do Bitcoin
+notifications = {}  # Notificações configuradas: {"user_number": {"above": valor, "below": valor}}
+user_settings = {}  # Configurações do usuário {"user_number": {"name": "nome", "response_type": "curta"}}
 
 
-# ========================= FUNÇÕES AUXILIARES ==========================
+# ======================== FUNÇÕES AUXILIARES ==========================
 
-# Função para obter o preço do Bitcoin em USD com tratamento de erro
+# Função para obter o preço atual do Bitcoin em USD
 def get_btc_price():
     try:
         url = "https://api.binance.com/api/v3/ticker/price"
-        params = {'symbol': 'BTCUSDT'}
-        response = requests.get(url, params=params)
+        response = requests.get(url, params={"symbol": "BTCUSDT"}, timeout=5)
         response.raise_for_status()
         data = response.json()
-
-        if "price" in data:
-            return float(data["price"])
-        else:
-            return None
-    except requests.exceptions.RequestException as e:
-        return None
-    except ValueError as ve:
+        return float(data.get("price"))
+    except Exception:
         return None
 
 
-# Função para obter taxas de câmbio USD -> outras moedas com tratamento de erro
-def get_exchange_rates():
-    try:
-        url = "https://api.exchangerate-api.com/v4/latest/USD"
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        rates = data.get("rates", {})
-        if rates:
-            return {
-                "BRL": rates.get("BRL"),
-                "EUR": rates.get("EUR"),
-                "CAD": rates.get("CAD")
-            }
-        else:
-            return None
-    except Exception as e:
-        return None
-
-
-# Função para obter o preço do Bitcoin em diversas moedas
-def get_btc_prices_in_currencies():
-    # Obter preço do BTC em USD
-    btc_usd = get_btc_price()
-    if btc_usd is None:
-        return "❌ Erro ao obter o preço do Bitcoin em USD. Tente novamente mais tarde."
-
-    # Obter taxas de câmbio
-    exchange_rates = get_exchange_rates()
-    if exchange_rates is None:
-        return "❌ Erro ao obter as taxas de câmbio. Tente novamente mais tarde."
-
-    # Verificar se todas as taxas necessárias estão presentes
-    brl_rate = exchange_rates.get("BRL")
-    eur_rate = exchange_rates.get("EUR")
-    cad_rate = exchange_rates.get("CAD")
-
-    if not all([brl_rate, eur_rate, cad_rate]):
-        return "❌ Erro: Algumas taxas de câmbio estão ausentes. Tente novamente mais tarde."
-
-    try:
-        # Calcular preços em diversas moedas
-        btc_prices_currencies = {
-            "USD": btc_usd,
-            "BRL": btc_usd * brl_rate,
-            "EUR": btc_usd * eur_rate,
-            "CAD": btc_usd * cad_rate
-        }
-
-        # Formatar a mensagem de retorno
-        return (
-            "💰 Valor atual do Bitcoin:\n\n"
-            f"🇺🇸 USD: ${btc_prices_currencies['USD']:,.2f}\n"
-            f"🇧🇷 BRL: R${btc_prices_currencies['BRL']:,.2f}\n"
-            f"🇪🇺 EUR: €{btc_prices_currencies['EUR']:,.2f}\n"
-            f"🇨🇦 CAD: C${btc_prices_currencies['CAD']:,.2f}"
-        ).replace(",", "X").replace(".", ",").replace("X", ".")
-    except Exception as e:
-        return f"❌ Erro ao calcular os preços do Bitcoin: {e}"
-
-
-# Função para formatar valores como moeda
-def format_currency(value):
-    return f"R${value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-# Resumo diário
-def get_daily_summary():
-    if not daily_summary:
-        return "❌ Resumo diário ainda não disponível."
-    max_price = daily_summary.get("max", 0)
-    min_price = daily_summary.get("min", 0)
-    current_price = daily_summary.get("current", 0)
-    variation = ((current_price - min_price) / min_price) * 100 if min_price else 0
-    return (
-        "🔔 Resumo Diário do Bitcoin:\n\n"
-        f"💰 Preço atual: {format_currency(current_price)}\n"
-        f"📈 Máximo: {format_currency(max_price)}\n"
-        f"📉 Mínimo: {format_currency(min_price)}\n"
-        f"📊 Variação: {variation:.2f}%"
+# Função para enviar mensagens no WhatsApp
+def send_whatsapp_message(to, body):
+    twilio_client.messages.create(
+        from_="whatsapp:+14155238886",
+        body=body,
+        to=to
     )
 
 
-# Tendência do mercado
-def get_market_trend():
-    if len(btc_prices) < 2:
-        return "❌ Não há dados suficientes para tendência do mercado."
-    moving_avg = sum(btc_prices) / len(btc_prices)
-    current_price = btc_prices[-1]
-    trend = "📈 Alta" if current_price > moving_avg else "📉 Baixa"
-    return f"{trend}! Preço atual: {format_currency(current_price)} | Média: {format_currency(moving_avg)}"
+# Função para gerar mensagens usando a API do ChatGPT
+def generate_chatgpt_response(user_message, user_number):
+    user_name = user_settings.get(user_number, {}).get("name", "usuário")
+    response_type = user_settings.get(user_number, {}).get("response_type", "curta")
+
+    prompt = f"""
+    Você é um assistente para um bot de WhatsApp focado em informações sobre o Bitcoin.
+    O usuário se chama '{user_name}' e prefere mensagens '{response_type}'.
+    A mensagem do usuário foi: '{user_message}'.
+    Responda de forma natural, com base nas informações que o bot pode obter, como preço do Bitcoin e outras funcionalidades.
+    """
+
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_message}
+        ],
+        temperature=0.7
+    )
+    return response.choices[0].message.content.strip()
 
 
-# Notificar metas de preço
-def configure_notification(command, user_number):
-    above_match = re.search(r"atingir\s+(\S+)", command)
-    below_match = re.search(r"abaixar\s+para\s+(\S+)", command)
-
-    if above_match:
-        price = parse_price(above_match.group(1))
-        if price:
-            user_above_targets.setdefault(user_number, []).append(price)
-            return f"👍 Notificação configurada! Avisa quando o Bitcoin atingir {format_currency(price)}."
-    elif below_match:
-        price = parse_price(below_match.group(1))
-        if price:
-            user_below_targets.setdefault(user_number, []).append(price)
-            return f"👍 Notificação configurada! Avisa quando o Bitcoin abaixar para {format_currency(price)}."
-    return "❌ Valor inválido. Use: '650mil' ou '650k'."
-
-
-# Inscrever resumo diário
-def subscribe_summary(user_number):
-    subscribed_users.add(user_number)
-    return "✅ Você foi inscrito no resumo diário do Bitcoin!"
-
-
-# Função para processar valores simplificados (650mil, 650k)
-def parse_price(value):
-    match = re.match(r"(\d+)\s*(mil|k)?", value, re.IGNORECASE)
-    if match:
-        base_value = int(match.group(1))
-        if match.group(2):  # 'mil' ou 'k' presente
-            base_value *= 1000
-        return base_value
-    return None
-
-
-# ====================== DICIONÁRIO DE COMANDOS =========================
-
-COMMANDS = {
-    "resumo diário": get_daily_summary,
-    "tendência do mercado": get_market_trend,
-    "inscrever resumo": subscribe_summary,
-    "notificar": configure_notification,
-    "informe o valor do bitcoin": get_btc_prices_in_currencies,
-    "valor do bitcoin": get_btc_prices_in_currencies,
-    "preço do bitcoin": get_btc_prices_in_currencies
-}
-
-
-# ========================= SISTEMA DE MONITORAMENTO ====================
-
-# Monitorar preço do Bitcoin
+# Função para monitorar notificações de preço do Bitcoin
 def monitor_btc():
     while True:
-        price = get_btc_price()
-        if price:
-            daily_summary.setdefault("max", price)
-            daily_summary.setdefault("min", price)
-            daily_summary["current"] = price
-            daily_summary["max"] = max(daily_summary["max"], price)
-            daily_summary["min"] = min(daily_summary["min"], price)
-            btc_prices.append(price)
-            if len(btc_prices) > 10:
-                btc_prices.pop(0)
-        time.sleep(60)
+        current_price = get_btc_price()
+        if current_price:
+            for user, targets in notifications.items():
+                if "above" in targets and current_price >= targets["above"]:
+                    response_text = generate_chatgpt_response(
+                        f"O Bitcoin atingiu R${targets['above']:.2f}. Preço atual: R${current_price:.2f}.",
+                        user
+                    )
+                    send_whatsapp_message(user, response_text)
+                    del notifications[user]["above"]
+
+                if "below" in targets and current_price <= targets["below"]:
+                    response_text = generate_chatgpt_response(
+                        f"O Bitcoin caiu para R${targets['below']:.2f}. Preço atual: R${current_price:.2f}.",
+                        user
+                    )
+                    send_whatsapp_message(user, response_text)
+                    del notifications[user]["below"]
+        time.sleep(30)
 
 
-# ========================= ENDPOINT DO WHATSAPP =======================
+# ======================== ENDPOINT DO WHATSAPP ========================
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    incoming_msg = request.values.get("Body", "").strip().lower()
+    incoming_msg = request.values.get("Body", "").strip()
     from_number = request.values.get("From", "").strip()
 
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Iterar pelos comandos no dicionário
-    for cmd, func in COMMANDS.items():
-        if re.search(cmd, incoming_msg):
-            if cmd == "notificar":
-                response_text = func(incoming_msg, from_number)
-            else:
-                response_text = func()
-            msg.body(response_text)
-            return str(resp)
+    # Verificar se é configuração inicial
+    if "configurar" in incoming_msg.lower():
+        user_settings[from_number] = {"name": "Usuário", "response_type": "curta"}
+        msg.body("🛠 Vamos configurar sua experiência!\n\nComo você gostaria que eu chamasse você?")
+        return str(resp)
 
-    # Comando desconhecido
-    msg.body("❌ Comando não reconhecido. Tente:\n"
-             "- 'Informe o valor do Bitcoin'\n"
-             "- 'Resumo diário'\n"
-             "- 'Tendência do mercado'\n"
-             "- 'Inscrever resumo'")
+    elif from_number in user_settings and "name" not in user_settings[from_number]:
+        user_settings[from_number]["name"] = incoming_msg
+        msg.body(f"Ótimo, {incoming_msg}! Você prefere mensagens 'curtas' ou 'longas'?")
+        return str(resp)
+
+    elif from_number in user_settings and "response_type" not in user_settings[from_number]:
+        response_type = "curta" if "curta" in incoming_msg.lower() else "longa"
+        user_settings[from_number]["response_type"] = response_type
+        msg.body("✅ Configuração concluída! Agora você pode me enviar comandos como:\n"
+                 "- 'Qual o preço do Bitcoin?'\n"
+                 "- 'Me avise quando o Bitcoin atingir 200 mil.'")
+        return str(resp)
+
+    # Detectar metas de notificação
+    above_match = re.search(r"atingir\s*(\d+)", incoming_msg)
+    below_match = re.search(r"abaixar\s*para\s*(\d+)", incoming_msg)
+
+    if above_match:
+        target = float(above_match.group(1))
+        notifications.setdefault(from_number, {})["above"] = target
+        msg.body(f"👍 Notificação configurada para quando o Bitcoin atingir R${target:.2f}.")
+        return str(resp)
+
+    elif below_match:
+        target = float(below_match.group(1))
+        notifications.setdefault(from_number, {})["below"] = target
+        msg.body(f"👍 Notificação configurada para quando o Bitcoin cair para R${target:.2f}.")
+        return str(resp)
+
+    # Responder usando o ChatGPT
+    response_text = generate_chatgpt_response(incoming_msg, from_number)
+    msg.body(response_text)
     return str(resp)
 
 
