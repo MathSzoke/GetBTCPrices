@@ -6,6 +6,11 @@ import threading
 import time
 import os
 import re
+import logging
+
+# Configuração do logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -39,19 +44,28 @@ def send_whatsapp_message(to, body):
 
 
 # Função para gerar respostas usando o servidor LLaMA 2
-def generate_llama2_response(user_message):
+def generate_llama_response(user_message):
     try:
+        logger.info(f"Enviando mensagem para LLaMA: {user_message}")  # Log da mensagem enviada
         response = requests.post(
             f"http://localhost:{os.environ.get('PORT', 8000)}/generate",
             json={"message": user_message},
             timeout=10
         )
+        logger.debug(f"Status da resposta: {response.status_code}")
+        logger.debug(f"Resposta do servidor: {response.text}")
+
         if response.status_code == 200:
-            return response.json().get("response", "Desculpe, não entendi a mensagem.")
+            llama_response = response.json().get("response", "Sem resposta.")
+            logger.info(f"Resposta gerada pelo LLaMA: {llama_response}")
+            return llama_response
         else:
-            return "❌ Erro ao processar sua solicitação. Tente novamente."
-    except Exception:
-        return "❌ Erro ao conectar ao servidor de IA."
+            logger.error(f"Erro na resposta do LLaMA: {response.status_code} - {response.text}")
+            return "❌ Erro ao gerar a resposta. Tente novamente."
+    except Exception as e:
+        logger.error(f"Falha na comunicação com o servidor FastAPI: {e}")
+        return "❌ Erro ao processar sua solicitação. Tente novamente."
+
 
 
 # ==================== MONITORAMENTO DO BITCOIN =====================
