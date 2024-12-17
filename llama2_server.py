@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import os
 
 app = FastAPI()
 
@@ -28,7 +29,6 @@ async def generate_response(input: InputMessage):
 
 
 if __name__ == "__main__":
-    import os
     import uvicorn
 
     port = int(os.environ.get("PORT", 8000))
