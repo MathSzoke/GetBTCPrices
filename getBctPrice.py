@@ -61,7 +61,7 @@ def generate_chatgpt_response(user_message, user_number):
     """
 
     response = client.chat.completions.create(
-        model="gpt-4",
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_message}
