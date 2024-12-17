@@ -2,13 +2,17 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
+import os
 
 app = FastAPI()
 
 # Carregar o modelo LLaMA 2
-MODEL_NAME = "meta-llama/Llama-2-7b-chat-hf"  # Modelo hospedado no Hugging Face
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map="auto", torch_dtype=torch.float16)
+MODEL_NAME = "meta-llama/Llama-3.3-70B-Instruct"
+HF_TOKEN = os.getenv("HF_TOKEN")  # Pegue o token da variável de ambiente
+
+# Baixar o modelo usando o token
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_auth_token=HF_TOKEN)
+model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, use_auth_token=HF_TOKEN)
 
 # Pipeline de geração de texto
 generator = pipeline("text-generation", model=model, tokenizer=tokenizer, device=0)
@@ -28,6 +32,5 @@ def generate_text(request: ChatRequest):
 
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

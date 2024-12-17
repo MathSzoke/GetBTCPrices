@@ -1,8 +1,6 @@
-flask
-twilio
-requests
 transformers
 torch
-accelerate
-fastapi
+huggingface_hub
 uvicorn
+flask
+requests
