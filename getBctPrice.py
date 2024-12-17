@@ -42,7 +42,7 @@ def send_whatsapp_message(to, body):
 def generate_llama2_response(user_message):
     try:
         response = requests.post(
-            f"http://0.0.0.0:{os.getenv('PORT', 8000)}/generate",
+            f"http://localhost:{os.environ.get('PORT', 8000)}/generate",
             json={"message": user_message},
             timeout=10
         )
